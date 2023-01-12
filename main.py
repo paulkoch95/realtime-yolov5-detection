@@ -15,13 +15,12 @@ class ImageStream(QThread):
     change_sig = Signal(np.ndarray)
 
     def run(self):
-        # capture from web cam
-        cap = cv2.VideoCapture(1)
+        cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
         while True:
             ret, cv_img = cap.read()
             if ret:
                 self.change_sig.emit(cv_img)
-                time.sleep(.15)
+                #time.sleep(.05)
 
 
 class MainApp(QMainWindow):
@@ -30,8 +29,8 @@ class MainApp(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("Camera App!")
-        self.display_width = 720
-        self.display_height = 480
+        self.display_width = 1920
+        self.display_height = 1080
 
         self.setFixedWidth(self.display_width)
         self.setFixedHeight(self.display_height)
@@ -56,20 +55,6 @@ class MainApp(QMainWindow):
         # start the thread
         self.thread.start()
 
-        self.timer = QTimer()
-        self.timer.setInterval(100)  # 100 milliseconds = 0.1 seconds
-        self.timer.timeout.connect(self.fps_display)  # Connect timeout signal to function
-        self.timer.start()
-
-    @Slot()  # Decorator to tell PyQt this method is a slot that accepts no arguments
-    def fps_display(self):
-        start_time = time.time()
-        counter = 1
-        # All the logic()
-        time.sleep(0.1)
-        time_now = time.time()
-        fps = str((counter / (time_now - start_time)))
-        self.fps_label.setText(fps)
 
     @Slot(np.ndarray)
     def refresh(self, cv_img):
@@ -79,7 +64,7 @@ class MainApp(QMainWindow):
     def convert_cv_qt(self, cv_img):
         """Convert from an opencv image to QPixmap"""
         rgb_image = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        rgb_image = self.detect(rgb_image)
+        #rgb_image = self.detect(rgb_image)
         # cv2.putText(rgb_image, 'Christmas', (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 255, 0), 2, cv2.LINE_AA)
         h, w, ch = rgb_image.shape
         bytes_per_line = ch * w
