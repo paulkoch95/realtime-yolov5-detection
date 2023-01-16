@@ -4,9 +4,10 @@ import sys
 import time
 from queue import Queue
 #Module Imports
+
 from PySide6.QtCore import Signal, QThread, Slot, Qt
 from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QVBoxLayout, QWidget, QComboBox
-from PySide6.QtGui import QPixmap, QImage, QShortcut, QKeySequence, QColor
+from PySide6.QtGui import QPixmap, QImage, QShortcut, QKeySequence, QColor, QScreen
 import cv2
 import numpy as np
 import torch
@@ -14,11 +15,27 @@ import torch
 # load pytorch model
 model = torch.hub.load('ultralytics/yolov5', 'yolov5l', pretrained=True)
 # device = torch.device('cuda')
-# device = torch.device('cpu')
-device = torch.device('mps')
+device = torch.device('cpu')
+# device = torch.device('mps')
 print(device)
 # load model to GPU
 model.to(device)
+
+
+class PostProcessStream(QThread):
+
+    def __init__(self, image_queue):
+        super().__init__()
+        self.to_be_saved_image_queue: Queue = image_queue
+
+    def run(self):
+        while True:
+            img = self.to_be_saved_image_queue.get()
+            self.save_opencv_image(img)
+
+    def save_opencv_image(self, img: QImage):
+        img.save(f"file_name_{str(time.time())}.png", "PNG")
+        print("Save Image")
 
 
 class InferenceStream(QThread):
@@ -62,14 +79,19 @@ class ImageStream(QThread):
     # Indication that Capture Device ID was changed in the GUI
     video_capture_device = Signal(int)
 
-
     def __init__(self, bbox_queue):
         super().__init__()
         # Queue where recevied images will be sent and then processed by the inference stream
         self.image_queue: Queue = bbox_queue
 
-        self.cap = cv2.VideoCapture(0)
+        self.cam_width = 1920
+        self.cam_height = 1080
+
+        self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         self.video_capture_device.connect(self.change_input)
+
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam_width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam_height)
 
     def run(self) -> None:
         """
@@ -80,8 +102,8 @@ class ImageStream(QThread):
         # codec = 0x47504A4D  # MJPG
         # cap.set(cv2.CAP_PROP_FPS, 30.0)
         # cap.set(cv2.CAP_PROP_FOURCC, codec)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+        # self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+        # self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
         while True:
             ret, cv_img = self.cap.read()
             if ret:
@@ -98,7 +120,11 @@ class ImageStream(QThread):
         Change Input Device of current cv2.Video Caputre
         :param device: ID of the device to switch to
         """
-        self.cap = cv2.VideoCapture(device)
+        self.cap = cv2.VideoCapture(device, cv2.CAP_DSHOW)
+
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam_width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam_height)
+
 
 class AppSettingsDialog(QWidget):
     frame_time_signal = Signal(float)
@@ -172,10 +198,12 @@ class MainApp(QMainWindow):
         super().__init__()
         # Setup Main Window if the App.
         self.setWindowTitle("Inference Results App")
-        self.display_width = 1920
-        self.display_height = 1080
-        self.setMaximumWidth(self.display_width)
-        self.setMaximumHeight(self.display_height)
+        self.available_size = QScreen.availableGeometry(QApplication.primaryScreen())
+        self.display_width = self.available_size.width()
+        self.display_height = self.available_size.height()
+        self.setGeometry(self.available_size)
+        # self.setMaximumWidth(self.display_width)
+        # self.setMaximumHeight(self.display_height)
 
         # Setup an empty label which will hold the QPixMap to display the Video Stream
         self.image_label = QLabel(self)
@@ -186,7 +214,7 @@ class MainApp(QMainWindow):
         vbox.addWidget(self.image_label)
         self.setLayout(vbox)
 
-        self.frameless_toggle = QPushButton(self,"Frameless full screen")
+        self.frameless_toggle = QPushButton(self, text="Fullscreen")
         self.frameless_toggle.clicked.connect(self.toggle_framless)
         self.frameless_toggle.move(0,0)
 
@@ -194,13 +222,16 @@ class MainApp(QMainWindow):
         # the drawing method.
         self.image_queue = Queue(maxsize=1)
         self.box_queue = Queue(maxsize=1)
+        self.to_be_saved_image_queue = Queue()
 
         # Create the Threads for receiving images and running the inference
         self.thread = ImageStream(self.image_queue)
         self.inference = InferenceStream(self.image_queue, self.box_queue)
+        self.post_process_stream = PostProcessStream(self.to_be_saved_image_queue)
 
         # Create Settings Dialogue (top - left)
         self.settings = AppSettingsDialog(self)
+        self.settings.setVisible(False)
         self.settings.emit_slot = self.thread.video_capture_device
 
         self.inference.start()
@@ -209,12 +240,19 @@ class MainApp(QMainWindow):
         self.thread.change_sig.connect(self.refresh)
         self.thread.start()
 
+        self.post_process_stream.start()
+
         # Shortcut to hide and show the settings menue.
         QShortcut(QKeySequence(Qt.Key.Key_O), self, activated=self.toggle_settings)
+        QShortcut(QKeySequence(Qt.Key.Key_S), self, activated=self.dispatch_save_image)
 
         # Empty results list for the model inference results (will only be updated when inference has been run, which
         # allows for the good performance.
         self.results = []
+        self.convert_to_Qt_format: QImage = None
+
+    def dispatch_save_image(self):
+        self.to_be_saved_image_queue.put(self.convert_to_Qt_format)
 
     def toggle_framless(self):
         if self.windowState() & Qt.WindowFullScreen:
@@ -249,8 +287,8 @@ class MainApp(QMainWindow):
         # standard conversion stuff, can be altered depending on needs.
         h, w, ch = rgb_image.shape
         bytes_per_line = ch * w
-        convert_to_Qt_format = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        p = convert_to_Qt_format.scaled(self.display_width, self.display_height, Qt.KeepAspectRatio)
+        self.convert_to_Qt_format = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        p = self.convert_to_Qt_format.scaled(self.display_width, self.display_height, Qt.KeepAspectRatio)
         return QPixmap.fromImage(p)
 
     def redraw_inference_results(self, image) -> None:
